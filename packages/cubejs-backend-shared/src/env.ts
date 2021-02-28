@@ -107,6 +107,10 @@ const variables = {
     const value = process.env.CUBEJS_DB_POLL_MAX_INTERVAL || '5s';
     return convertTimeStrToMs(value, 'CUBEJS_DB_POLL_MAX_INTERVAL');
   },
+  // BigQuery Driver
+  bigQueryLocation: () => get('CUBEJS_DB_BQ_LOCATION')
+    .asString(),
+  // Redis
   redisPoolMin: () => get('CUBEJS_REDIS_POOL_MIN')
     .default('2')
     .asInt(),
@@ -147,7 +151,7 @@ const variables = {
     .asString(),
   jwtClaimsNamespace: () => get('CUBEJS_JWT_CLAIMS_NAMESPACE')
     .asString(),
-  playgroundAuthSecret: () => get('PLAYGROUND_AUTH_SECRET')
+  playgroundAuthSecret: () => get('CUBEJS_PLAYGROUND_AUTH_SECRET')
     .asString(),
   agentFrameSize: () => get('CUBEJS_AGENT_FRAME_SIZE')
     .default('200')

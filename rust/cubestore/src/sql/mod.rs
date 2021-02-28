@@ -30,17 +30,37 @@ use crate::queryplanner::query_executor::QueryExecutor;
 use crate::sql::parser::CubeStoreParser;
 use crate::store::ChunkDataStore;
 use crate::sys::malloc::trim_allocs;
-use chrono::{TimeZone, Utc};
+use crate::table::data::{MutRows, Rows, TableValueR};
+use chrono::format::Fixed::Nanosecond3;
+use chrono::format::Item::{Fixed, Literal, Numeric, Space};
+use chrono::format::Numeric::{Day, Hour, Minute, Month, Second, Year};
+use chrono::format::Pad::Zero;
+use chrono::format::Parsed;
+use chrono::{ParseResult, Utc};
 use datafusion::physical_plan::datetime_expressions::string_to_timestamp_nanos;
 use datafusion::sql::parser::Statement as DFStatement;
 use futures::future::join_all;
 use hex::FromHex;
 use itertools::Itertools;
 use parser::Statement as CubeStoreStatement;
+use serde::{Deserialize, Serialize};
+use std::io::Write;
+use std::str::from_utf8_unchecked;
 
 #[async_trait]
 pub trait SqlService: DIService + Send + Sync {
     async fn exec_query(&self, query: &str) -> Result<DataFrame, CubeError>;
+
+    async fn exec_query_with_context(
+        &self,
+        context: SqlQueryContext,
+        query: &str,
+    ) -> Result<DataFrame, CubeError>;
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+pub struct SqlQueryContext {
+    pub user: Option<String>,
 }
 
 pub struct SqlServiceImpl {
@@ -260,6 +280,15 @@ impl Dialect for MySqlDialectWithBackTicks {
 #[async_trait]
 impl SqlService for SqlServiceImpl {
     async fn exec_query(&self, q: &str) -> Result<DataFrame, CubeError> {
+        self.exec_query_with_context(SqlQueryContext::default(), q)
+            .await
+    }
+
+    async fn exec_query_with_context(
+        &self,
+        _context: SqlQueryContext,
+        q: &str,
+    ) -> Result<DataFrame, CubeError> {
         if !q.to_lowercase().starts_with("insert") {
             trace!("Query: '{}'", q);
         }
@@ -509,16 +538,19 @@ fn convert_columns_type(columns: &Vec<ColumnDef>) -> Result<Vec<Column>, CubeErr
     Ok(rolupdb_columns)
 }
 
-fn parse_chunk(chunk: &[Vec<Expr>], column: &Vec<&Column>) -> Result<Vec<Row>, CubeError> {
-    let mut res: Vec<Row> = Vec::new();
+fn parse_chunk(chunk: &[Vec<Expr>], column: &Vec<&Column>) -> Result<Rows, CubeError> {
+    let mut buffer = Vec::new();
+    let mut res = MutRows::new(column.len());
     for r in chunk {
-        let mut row = vec![TableValue::Int(0); column.len()];
+        let mut row = res.add_row();
         for i in 0..r.len() {
-            row[column[i].get_index()] = extract_data(&r[i], column, i)?;
+            row.set_interned(
+                column[i].get_index(),
+                extract_data(&r[i], column, i, &mut buffer)?,
+            );
         }
-        res.push(Row::new(row));
     }
-    Ok(res)
+    Ok(res.freeze())
 }
 
 fn decode_byte(s: &str) -> Option<u8> {
@@ -537,29 +569,40 @@ fn decode_byte(s: &str) -> Option<u8> {
     return Some(v0 * 16 + v1);
 }
 
-fn parse_hyper_log_log(v: &Value, f: HllFlavour) -> Result<Vec<u8>, CubeError> {
-    let bytes = parse_binary_string(v)?;
-    is_valid_hll(&bytes, f)?;
+fn parse_hyper_log_log<'a>(
+    buffer: &'a mut Vec<u8>,
+    v: &'a Value,
+    f: HllFlavour,
+) -> Result<&'a [u8], CubeError> {
+    let bytes = parse_binary_string(buffer, v)?;
+    is_valid_hll(bytes, f)?;
 
     return Ok(bytes);
 }
 
-fn parse_binary_string(v: &Value) -> Result<Vec<u8>, CubeError> {
+fn parse_binary_string<'a>(buffer: &'a mut Vec<u8>, v: &'a Value) -> Result<&'a [u8], CubeError> {
     match v {
-        Value::Number(s) => Ok(s.as_bytes().to_vec()),
+        Value::Number(s) => Ok(s.as_bytes()),
         // We interpret strings of the form '0f 0a 14 ff' as a list of hex-encoded bytes.
         // MySQL will store bytes of the string itself instead and we should do the same.
         // TODO: Ensure CubeJS does not send strings of this form our way and match MySQL behavior.
-        Value::SingleQuotedString(s) => s
-            .split(' ')
-            .filter(|b| !b.is_empty())
-            .map(|s| {
-                decode_byte(s).ok_or_else(|| {
-                    CubeError::user(format!("cannot convert value to binary string: {}", v))
+        Value::SingleQuotedString(s) => {
+            *buffer = s
+                .split(' ')
+                .filter(|b| !b.is_empty())
+                .map(|s| {
+                    decode_byte(s).ok_or_else(|| {
+                        CubeError::user(format!("cannot convert value to binary string: {}", v))
+                    })
                 })
-            })
-            .try_collect(),
-        Value::HexStringLiteral(s) => Ok(Vec::from_hex(s.as_bytes())?),
+                .try_collect()?;
+            Ok(buffer.as_slice())
+        }
+        // TODO: allocate directly on arena.
+        Value::HexStringLiteral(s) => {
+            *buffer = Vec::from_hex(s.as_bytes())?;
+            Ok(buffer.as_slice())
+        }
         _ => Err(CubeError::user(format!(
             "cannot convert value to binary string: {}",
             v
@@ -567,9 +610,14 @@ fn parse_binary_string(v: &Value) -> Result<Vec<u8>, CubeError> {
     }
 }
 
-fn extract_data(cell: &Expr, column: &Vec<&Column>, i: usize) -> Result<TableValue, CubeError> {
+fn extract_data<'a>(
+    cell: &'a Expr,
+    column: &Vec<&Column>,
+    i: usize,
+    buffer: &'a mut Vec<u8>,
+) -> Result<TableValueR<'a>, CubeError> {
     if let Expr::Value(Value::Null) = cell {
-        return Ok(TableValue::Null);
+        return Ok(TableValueR::Null);
     }
     let res = {
         match column[i].get_column_type() {
@@ -582,7 +630,7 @@ fn extract_data(cell: &Expr, column: &Vec<&Column>, i: usize) -> Result<TableVal
                         cell
                     )));
                 };
-                TableValue::String(val.to_string())
+                TableValueR::String(&val)
             }
             ColumnType::Int => {
                 let val_int = match cell {
@@ -610,32 +658,36 @@ fn extract_data(cell: &Expr, column: &Vec<&Column>, i: usize) -> Result<TableVal
                         cell, e
                     )));
                 }
-                TableValue::Int(val_int.unwrap())
+                TableValueR::Int(val_int.unwrap())
             }
             ColumnType::Decimal { .. } => {
                 let decimal_val = parse_decimal(cell)?;
-                TableValue::Decimal(decimal_val.to_string())
+                buffer.clear();
+                buffer.write_fmt(format_args!("{}", decimal_val)).unwrap();
+                TableValueR::Decimal(unsafe { from_utf8_unchecked(buffer) })
             }
             ColumnType::Bytes => {
                 let val;
                 if let Expr::Value(v) = cell {
-                    val = parse_binary_string(v)
+                    val = parse_binary_string(buffer, v)
                 } else {
                     return Err(CubeError::user("Corrupted data in query.".to_string()));
                 };
-                return Ok(TableValue::Bytes(val?));
+                return Ok(TableValueR::Bytes(val?));
             }
             &ColumnType::HyperLogLog(f) => {
                 let val;
                 if let Expr::Value(v) = cell {
-                    val = parse_hyper_log_log(v, f)
+                    val = parse_hyper_log_log(buffer, v, f)
                 } else {
                     return Err(CubeError::user("Corrupted data in query.".to_string()));
                 };
-                return Ok(TableValue::Bytes(val?));
+                return Ok(TableValueR::Bytes(val?));
             }
             ColumnType::Timestamp => match cell {
-                Expr::Value(Value::SingleQuotedString(v)) => timestamp_from_string(v)?,
+                Expr::Value(Value::SingleQuotedString(v)) => {
+                    TableValueR::Timestamp(timestamp_from_string(v)?)
+                }
                 x => {
                     return Err(CubeError::user(format!(
                         "Can't parse timestamp from, {:?}",
@@ -645,9 +697,9 @@ fn extract_data(cell: &Expr, column: &Vec<&Column>, i: usize) -> Result<TableVal
             },
             ColumnType::Boolean => match cell {
                 Expr::Value(Value::SingleQuotedString(v)) => {
-                    TableValue::Boolean(v.to_lowercase() == "true")
+                    TableValueR::Boolean(v.to_lowercase() == "true")
                 }
-                Expr::Value(Value::Boolean(b)) => TableValue::Boolean(*b),
+                Expr::Value(Value::Boolean(b)) => TableValueR::Boolean(*b),
                 x => {
                     return Err(CubeError::user(format!(
                         "Can't parse boolean from, {:?}",
@@ -657,22 +709,36 @@ fn extract_data(cell: &Expr, column: &Vec<&Column>, i: usize) -> Result<TableVal
             },
             ColumnType::Float => {
                 let decimal_val = parse_decimal(cell)?;
-                TableValue::Float(decimal_val.to_string())
+                TableValueR::Float(decimal_val.into())
             }
         }
     };
     Ok(res)
 }
 
-pub fn timestamp_from_string(v: &str) -> Result<TableValue, CubeError> {
-    let result = string_to_timestamp_nanos(v).or_else(|_| {
+pub fn timestamp_from_string(v: &str) -> Result<TimestampValue, CubeError> {
+    let nanos;
+    if v.ends_with("UTC") {
         // TODO this parsed as nanoseconds instead of milliseconds
-        if let Ok(ts) = Utc.datetime_from_str(v, "%Y-%m-%d %H:%M:%S%.3f UTC") {
-            return Ok(ts.timestamp_nanos());
+        #[rustfmt::skip] // built from "%Y-%m-%d %H:%M:%S%.3f UTC".
+        const FORMAT: [chrono::format::Item; 14] = [Numeric(Year, Zero), Literal("-"), Numeric(Month, Zero), Literal("-"), Numeric(Day, Zero), Space(" "), Numeric(Hour, Zero), Literal(":"), Numeric(Minute, Zero), Literal(":"), Numeric(Second, Zero), Fixed(Nanosecond3), Space(" "), Literal("UTC")];
+        match parse_time(v, &FORMAT).and_then(|p| p.to_datetime_with_timezone(&Utc)) {
+            Ok(ts) => nanos = ts.timestamp_nanos(),
+            Err(_) => return Err(CubeError::user(format!("Can't parse timestamp: {}", v))),
         }
-        return Err(CubeError::user(format!("Can't parse timestamp: {}", v)));
-    });
-    Ok(TableValue::Timestamp(TimestampValue::new(result?)))
+    } else {
+        match string_to_timestamp_nanos(v) {
+            Ok(ts) => nanos = ts,
+            Err(_) => return Err(CubeError::user(format!("Can't parse timestamp: {}", v))),
+        }
+    }
+    Ok(TimestampValue::new(nanos))
+}
+
+fn parse_time(s: &str, format: &[chrono::format::Item]) -> ParseResult<Parsed> {
+    let mut p = Parsed::new();
+    chrono::format::parse(&mut p, s, format.into_iter())?;
+    Ok(p)
 }
 
 fn parse_decimal(cell: &Expr) -> Result<f64, CubeError> {
@@ -999,21 +1065,21 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(result.get_rows()[0], Row::new(vec![TableValue::Decimal("160.61".to_string()), TableValue::Float("5.892".to_string())]));
+            assert_eq!(result.get_rows()[0], Row::new(vec![TableValue::Decimal("160.61".to_string()), TableValue::Float(5.892.into())]));
 
             let result = service
                 .exec_query("SELECT sum(dec_value), sum(dec_value_1) / 10 from foo.values where dec_value_1 < 10")
                 .await
                 .unwrap();
 
-            assert_eq!(result.get_rows()[0], Row::new(vec![TableValue::Decimal("-132.99".to_string()), TableValue::Float("0.45".to_string())]));
+            assert_eq!(result.get_rows()[0], Row::new(vec![TableValue::Decimal("-132.99".to_string()), TableValue::Float(0.45.into())]));
 
             let result = service
                 .exec_query("SELECT sum(dec_value), sum(dec_value_1) / 10 from foo.values where dec_value_1 < '10'")
                 .await
                 .unwrap();
 
-            assert_eq!(result.get_rows()[0], Row::new(vec![TableValue::Decimal("-132.99".to_string()), TableValue::Float("0.45".to_string())]));
+            assert_eq!(result.get_rows()[0], Row::new(vec![TableValue::Decimal("-132.99".to_string()), TableValue::Float(0.45.into())]));
         })
             .await;
     }
@@ -1116,7 +1182,7 @@ mod tests {
                 "SELECT SUM(decimal_value) FROM foo.decimal_group"
             ).await.unwrap();
 
-            assert_eq!(result.get_rows(), &vec![Row::new(vec![TableValue::Float("7456503871042.786".to_string())])]);
+            assert_eq!(result.get_rows(), &vec![Row::new(vec![TableValue::Float(7456503871042.786.into())])]);
         }).await;
     }
 

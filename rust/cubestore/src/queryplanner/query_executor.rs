@@ -36,7 +36,7 @@ use datafusion::physical_plan::parquet::ParquetExec;
 use datafusion::physical_plan::sort::SortExec;
 use datafusion::physical_plan::{collect, ExecutionPlan, Partitioning, RecordBatchStream};
 use itertools::Itertools;
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, trace, warn};
 use mockall::automock;
 use num::BigInt;
 use regex::Regex;
@@ -106,7 +106,7 @@ impl QueryExecutor for QueryExecutorImpl {
                 execution_time.elapsed()?,
                 plan_to_move
             );
-            info!(
+            debug!(
                 "Slow Query Physical Plan ({:?}): {:#?}",
                 execution_time.elapsed()?,
                 &split_plan
@@ -124,7 +124,7 @@ impl QueryExecutor for QueryExecutorImpl {
                 &split_plan
             );
         }
-        let data_frame = batch_to_dataframe(&results?)?;
+        let data_frame = tokio::task::spawn_blocking(|| batch_to_dataframe(&results?)).await??;
         Ok(data_frame)
     }
 
@@ -155,7 +155,7 @@ impl QueryExecutor for QueryExecutorImpl {
                 execution_time.elapsed()?,
                 plan_to_move
             );
-            info!(
+            debug!(
                 "Slow Partition Query Physical Plan ({:?}): {:#?}",
                 execution_time.elapsed()?,
                 &worker_plan
@@ -815,7 +815,7 @@ pub fn batch_to_dataframe(batches: &Vec<RecordBatch>) -> Result<DataFrame, CubeE
                             TableValue::Null
                         } else {
                             let decimal = a.value(i) as f64;
-                            TableValue::Float(decimal.to_string())
+                            TableValue::Float(decimal.into())
                         });
                     }
                 }

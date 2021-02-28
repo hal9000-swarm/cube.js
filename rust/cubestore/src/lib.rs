@@ -6,6 +6,8 @@
 #![feature(box_patterns)]
 #![feature(slice_internals)]
 #![feature(raw)]
+#![feature(total_cmp)]
+#![feature(vec_into_raw_parts)]
 // #![feature(trace_macros)]
 
 // trace_macros!(true);
@@ -32,6 +34,7 @@ use tokio::sync::mpsc::error::SendError;
 use tokio::time::error::Elapsed;
 
 pub mod cluster;
+pub mod codegen;
 pub mod config;
 pub mod http;
 pub mod import;
@@ -60,21 +63,21 @@ pub enum CubeErrorCauseType {
 }
 
 impl CubeError {
-    fn user(message: String) -> CubeError {
+    pub fn user(message: String) -> CubeError {
         CubeError {
             message,
             cause: CubeErrorCauseType::User,
         }
     }
 
-    fn internal(message: String) -> CubeError {
+    pub fn internal(message: String) -> CubeError {
         CubeError {
             message,
             cause: CubeErrorCauseType::Internal,
         }
     }
 
-    fn from_error<E: fmt::Display>(error: E) -> CubeError {
+    pub fn from_error<E: fmt::Display>(error: E) -> CubeError {
         CubeError {
             message: format!("{}\n{}", error, Backtrace::capture()),
             cause: CubeErrorCauseType::Internal,
@@ -240,6 +243,7 @@ impl From<std::string::FromUtf8Error> for CubeError {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 impl From<procspawn::SpawnError> for CubeError {
     fn from(v: procspawn::SpawnError) -> Self {
         CubeError::internal(v.to_string())
@@ -252,6 +256,7 @@ impl From<tokio::sync::oneshot::error::RecvError> for CubeError {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 impl From<ipc_channel::ipc::IpcError> for CubeError {
     fn from(v: ipc_channel::ipc::IpcError) -> Self {
         CubeError::from_debug_error(v)

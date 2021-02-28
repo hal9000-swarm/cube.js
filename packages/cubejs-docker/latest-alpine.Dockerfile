@@ -1,4 +1,4 @@
-FROM node:12.20.1-alpine
+FROM node:12.20.1-alpine3.12
 
 ARG IMAGE_VERSION=unknown
 
@@ -7,6 +7,8 @@ ENV CUBEJS_DOCKER_IMAGE_TAG=alpine
 
 RUN apk add rxvt-unicode
 
+# For now Cube.js docker image is building without waiting cross jobs, it's why we are not able to install it
+ENV CUBESTORE_SKIP_POST_INSTALL=true
 ENV TERM rxvt-unicode
 ENV NODE_ENV production
 
@@ -21,6 +23,7 @@ RUN yarn install
 # By default Node dont search in parent directory from /cube/conf, @todo Reaserch a little bit more
 ENV NODE_PATH /cube/conf/node_modules:/cube/node_modules
 RUN ln -s /cube/node_modules/.bin/cubejs /usr/local/bin/cubejs
+RUN ln -s /cube/node_modules/.bin/cubestore-dev /usr/local/bin/cubestore-dev
 
 WORKDIR /cube/conf
 

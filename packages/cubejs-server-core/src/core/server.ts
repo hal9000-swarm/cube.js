@@ -11,11 +11,13 @@ import {
   createCancelableInterval, formatDuration,
   getAnonymousId,
   getEnv,
-  internalExceptions,
+  internalExceptions, isDockerImage, requireFromPackage,
   track,
 } from '@cubejs-backend/shared';
+
 import type { Application as ExpressApplication } from 'express';
 import type { BaseDriver } from '@cubejs-backend/query-orchestrator';
+import type { CubeStoreDevDriver, CubeStoreHandler, isCubeStoreSupported } from '@cubejs-backend/cubestore-driver';
 import type {
   ContextToAppIdFn,
   CreateOptions,
@@ -28,6 +30,7 @@ import type {
   DriverContext,
   SchemaFileRepository,
   UserBackgroundContext,
+  LoggerFn,
 } from './types';
 
 import { FileRepository } from './FileRepository';
@@ -292,6 +295,54 @@ export class CubejsServerCore {
     const dbType = opts.dbType || <DatabaseType|undefined>process.env.CUBEJS_DB_TYPE;
     const externalDbType = opts.externalDbType || <DatabaseType|undefined>process.env.CUBEJS_EXT_DB_TYPE;
     const devServer = process.env.NODE_ENV !== 'production' || process.env.CUBEJS_DEV_MODE === 'true';
+    const logger: LoggerFn = opts.logger || process.env.NODE_ENV !== 'production'
+      ? devLogger(process.env.CUBEJS_LOG_LEVEL)
+      : prodLogger(process.env.CUBEJS_LOG_LEVEL);
+
+    let externalDriverFactory = externalDbType && (
+      () => new (CubejsServerCore.lookupDriverClass(externalDbType))({
+        host: process.env.CUBEJS_EXT_DB_HOST,
+        database: process.env.CUBEJS_EXT_DB_NAME,
+        port: process.env.CUBEJS_EXT_DB_PORT,
+        user: process.env.CUBEJS_EXT_DB_USER,
+        password: process.env.CUBEJS_EXT_DB_PASS,
+      })
+    );
+    let externalDialectFactory = () => typeof externalDbType === 'string' &&
+      CubejsServerCore.lookupDriverClass(externalDbType).dialectClass &&
+      CubejsServerCore.lookupDriverClass(externalDbType).dialectClass();
+
+    if (!externalDbType && getEnv('devMode')) {
+      const cubeStorePackage = requireFromPackage<{
+        isCubeStoreSupported: typeof isCubeStoreSupported,
+        CubeStoreHandler: typeof CubeStoreHandler,
+        CubeStoreDevDriver: typeof CubeStoreDevDriver,
+      }>('@cubejs-backend/cubestore-driver', {
+        relative: isDockerImage(),
+        silent: true,
+      });
+      if (cubeStorePackage) {
+        if (cubeStorePackage.isCubeStoreSupported()) {
+          console.log(`🔥 Cube Store (${version}) is assigned to 13306 port.`);
+
+          const cubeStoreHandler = new cubeStorePackage.CubeStoreHandler({
+            stdout: (data) => {
+              console.log(data.toString().trim());
+            },
+            stderr: (data) => {
+              console.log(data.toString().trim());
+            },
+            onRestart: (code) => logger('Cube Store Restarting', {
+              warning: `Instance exit with ${code}, restarting`,
+            }),
+          });
+
+          // Lazy loading for Cube Store
+          externalDriverFactory = () => new cubeStorePackage.CubeStoreDevDriver(cubeStoreHandler);
+          externalDialectFactory = () => cubeStorePackage.CubeStoreDevDriver.dialectClass();
+        }
+      }
+    }
 
     const options: ServerCoreInitializedOptions = {
       dbType,
@@ -300,18 +351,8 @@ export class CubejsServerCore {
       driverFactory: () => typeof dbType === 'string' && CubejsServerCore.createDriver(dbType),
       dialectFactory: (ctx) => CubejsServerCore.lookupDriverClass(ctx.dbType).dialectClass &&
         CubejsServerCore.lookupDriverClass(ctx.dbType).dialectClass(),
-      externalDriverFactory: externalDbType && (
-        () => new (CubejsServerCore.lookupDriverClass(externalDbType))({
-          host: process.env.CUBEJS_EXT_DB_HOST,
-          database: process.env.CUBEJS_EXT_DB_NAME,
-          port: process.env.CUBEJS_EXT_DB_PORT,
-          user: process.env.CUBEJS_EXT_DB_USER,
-          password: process.env.CUBEJS_EXT_DB_PASS,
-        })
-      ),
-      externalDialectFactory: () => typeof externalDbType === 'string' &&
-        CubejsServerCore.lookupDriverClass(externalDbType).dialectClass &&
-        CubejsServerCore.lookupDriverClass(externalDbType).dialectClass(),
+      externalDriverFactory,
+      externalDialectFactory,
       apiSecret: process.env.CUBEJS_API_SECRET,
       telemetry: process.env.CUBEJS_TELEMETRY !== 'false',
       scheduledRefreshTimeZones: process.env.CUBEJS_SCHEDULED_REFRESH_TIMEZONES &&
@@ -325,10 +366,9 @@ export class CubejsServerCore {
         devServer ? 'dev_pre_aggregations' : 'prod_pre_aggregations'
       ),
       schemaPath: process.env.CUBEJS_SCHEMA_PATH || 'schema',
-      logger: opts.logger || process.env.NODE_ENV !== 'production'
-        ? devLogger(process.env.CUBEJS_LOG_LEVEL)
-        : prodLogger(process.env.CUBEJS_LOG_LEVEL),
+      logger,
       scheduledRefreshTimer: getEnv('scheduledRefresh') !== undefined ? getEnv('scheduledRefresh') : getEnv('refreshTimer'),
+      sqlCache: false,
       ...opts,
       jwt: {
         key: getEnv('jwkKey'),
@@ -535,7 +575,8 @@ export class CubejsServerCore {
       compileContext: options.context,
       dialectClass: options.dialectClass,
       externalDialectClass: options.externalDialectClass,
-      allowJsDuplicatePropsInSchema: options.allowJsDuplicatePropsInSchema
+      allowJsDuplicatePropsInSchema: options.allowJsDuplicatePropsInSchema,
+      sqlCache: this.options.sqlCache,
     });
   }
 

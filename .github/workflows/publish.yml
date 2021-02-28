@@ -41,6 +41,10 @@ jobs:
         uses: borales/actions-yarn@v2.3.0
         with:
           cmd: install --frozen-lockfile
+      - name: Set environment variables
+        uses: allenevans/set-env@v2.0.0
+        with:
+          CUBESTORE_SKIP_POST_INSTALL: true
       - name: Lerna bootstrap
         run: yarn lerna bootstrap
       - name: Build Core Client libraries
@@ -191,39 +195,30 @@ jobs:
       matrix:
         target:
           - x86_64-unknown-linux-gnu
-          #          - x86_64-unknown-linux-musl
-          # procspawn is using libc::kill(pid as i32, libc::SIGKILL) which is not supported in windows
-          # - x86_64-pc-windows-gnu
+          - x86_64-unknown-linux-musl
+          - x86_64-pc-windows-gnu
           - x86_64-apple-darwin
         include:
           - os: ubuntu-latest
-            before_script: cross-ubuntu-gnu
             target: x86_64-unknown-linux-gnu
-            artifact_name: rust/target/x86_64-unknown-linux-gnu/release/cubestored
             executable_name: cubestored
-            # Because it's buggy
-            cross: false
+            cross: true
             strip: true
             compress: false
-          #- os: ubuntu-latest
-          #  before_script: cross-ubuntu-musl
-          #  target: x86_64-unknown-linux-musl
-          #  artifact_name: rust/target/x86_64-unknown-linux-musl/release/cubestored
-          #  executable_name: cubestored
-          #  # Because it's buggy
-          #  cross: false
-          #  strip: true
-          #  compress: true
-          #- os: windows-latest
-          #  target: x86_64-pc-windows-msvc
-          #  artifact_name: rust/target/x86_64-pc-windows-msvc/release/cubestored.exe
-          #  executable_name: cubestored.exe
-          #  cross: false
-          #  strip: true
-          #  compress: true
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            executable_name: cubestored
+            cross: true
+            strip: true
+            compress: false
+          - os: ubuntu-latest
+            target: x86_64-pc-windows-gnu
+            executable_name: cubestored.exe
+            cross: true
+            strip: true
+            compress: false
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: rust/target/x86_64-apple-darwin/release/cubestored
             executable_name: cubestored
             cross: false
             strip: true
@@ -234,20 +229,26 @@ jobs:
       - name: Setup Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly-2020-10-25
+          toolchain: nightly-2021-02-17
           target: ${{ matrix.target }}
           override: true
           components: rustfmt
       - uses: Swatinem/rust-cache@v1
+        with:
+          key: ${{ matrix.target }}
       - run: source .github/actions/${{ matrix.before_script }}.sh
         if: ${{ matrix.before_script }}
         shell: bash
-      - name: Set Env Variables for Musl
+      #- name: Install dependencies Windows
+      #  run: vcpkg integrate install; vcpkg install openssl:x64-windows
+      #  if: matrix.os == 'windows-latest'
+      #  env:
+      #    VCPKG_ROOT: 'C:\vcpkg'
+      - name: Set Env Variables for Darwin
         uses: allenevans/set-env@v2.0.0
-        if: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
+        if: ${{ matrix.target == 'x86_64-apple-darwin' }}
         with:
           OPENSSL_STATIC: true
-          OPENSSL_DIR: "/musl"
       # https://github.com/actions-rs/cargo/issues/6
       #- uses: actions-rs/cargo@v1
       - uses: marcopolo/cargo@master
@@ -262,19 +263,20 @@ jobs:
         uses: svenstaro/upx-action@v2
         if: ${{ matrix.compress }}
         with:
-          file: ${{ matrix.artifact_name }}
+          file: rust/target/${{ matrix.target }}/release/${{ matrix.executable_name }}
           args: --lzma
           strip: ${{ matrix.strip }}
       - name: Create archive for release
         run: |
           mkdir cubestore-archive
           mkdir cubestore-archive/bin
-          mv ${{ matrix.artifact_name }} cubestore-archive/bin/${{ matrix.executable_name }}
-          tar czf cubestored-${{ matrix.target }}.tar.gz cubestore-archive
+          mv rust/target/${{ matrix.target }}/release/${{ matrix.executable_name }} cubestore-archive/bin/${{ matrix.executable_name }}
+          cd cubestore-archive
+          tar cvf cubestored-${{ matrix.target }}.tar.gz *
       - name: Upload Binary to Release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: cubestored-${{ matrix.target }}.tar.gz
+          file: cubestore-archive/cubestored-${{ matrix.target }}.tar.gz
           asset_name: cubestored-${{ matrix.target }}.tar.gz
           tag: ${{ github.ref }}

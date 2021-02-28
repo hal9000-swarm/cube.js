@@ -1,5 +1,4 @@
 use cubestore::config::Config;
-use cubestore::mysql::MySqlServer;
 use cubestore::telemetry::{track_event, ReportingLogger};
 use log::debug;
 use log::Level;
@@ -33,29 +32,16 @@ fn main() {
 
     debug!("New process started");
 
+    #[cfg(not(target_os = "windows"))]
     procspawn::init();
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
 
     runtime.block_on(async move {
         let services = config.configure().await;
-        services.start_processing_loops().await.unwrap();
 
         track_event("Cube Store Start".to_string(), HashMap::new()).await;
 
-        if !services.cluster.is_select_worker() {
-            MySqlServer::listen(
-                format!(
-                    "{}:{}",
-                    config.config_obj().bind_address(),
-                    config.config_obj().bind_port()
-                ),
-                services.sql_service.clone(),
-            )
-            .await
-            .unwrap();
-        } else {
-            services.cluster.wait_for_worker_to_close().await;
-        }
+        services.wait_processing_loops().await.unwrap();
     });
 }
