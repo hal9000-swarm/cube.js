@@ -30,7 +30,8 @@ class MssqlParamAllocator extends ParamAllocator {
 
 const GRANULARITY_TO_INTERVAL = {
   day: (date) => `dateadd(day, DATEDIFF(day, 0, ${date}), 0)`,
-  week: (date) => `dateadd(week, DATEDIFF(week, 0, ${date}), 0)`,
+  // nice explanation for why this dateCalculation is correct for isoWeek in https://learnsql.com/blog/how-to-datepart-sql-server/ 'Option 2: Monday as the First Day of the Week'
+  week: (date) => `dateadd(week, DATEDIFF(week, 0, DATEADD(day, -1, ${date})), 0)`,
   hour: (date) => `dateadd(hour, DATEDIFF(hour, 0, ${date}), 0)`,
   minute: (date) => `dateadd(minute, DATEDIFF(minute, 0, ${date}), 0)`,
   second: (date) => `CAST(FORMAT(${date}, 'yyyy-MM-ddTHH:mm:ss.000') AS DATETIME2)`, // until SQL 2016, this causes an int overflow; in SQL 2016 these calls can be changed to DATEDIFF_BIG
