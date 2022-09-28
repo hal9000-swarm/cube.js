@@ -59,7 +59,8 @@ export class MssqlQuery extends BaseQuery {
   }
 
   convertTz(field) {
-    return `TODATETIMEOFFSET(${field}, '${moment().tz(this.timezone).format('Z')}')`;
+    // as the offset is ignored for some stuff (e.g. DATEDIFF) we convert timestamp to requested timezone directly
+    return `CAST(SWITCHOFFSET(${field}, '${moment().tz(this.timezone).format('Z')}')as datetime2)`;
   }
 
   timeStampCast(value) {
