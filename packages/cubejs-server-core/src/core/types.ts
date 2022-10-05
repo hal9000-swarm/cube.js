@@ -97,6 +97,8 @@ export type DbTypeFn = (context: RequestContext) => DatabaseType;
 
 export type LoggerFn = (msg: string, params: any) => void;
 
+export const DynamicTimeZone: string = 'DYNAMIC';
+
 export interface CreateOptions {
   dbType?: DatabaseType | DbTypeFn;
   externalDbType?: DatabaseType | ExternalDbTypeFn;

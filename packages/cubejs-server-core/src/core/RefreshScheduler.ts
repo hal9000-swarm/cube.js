@@ -3,7 +3,7 @@ import uuid from 'uuid/v4';
 
 import { CubejsServerCore } from './server';
 import { CompilerApi } from './CompilerApi';
-import { RequestContext } from './types';
+import { DriverContext, DynamicTimeZone, RequestContext } from './types';
 
 export class RefreshScheduler {
   public constructor(
@@ -92,7 +92,8 @@ export class RefreshScheduler {
 
   public async runScheduledRefresh(ctx: RequestContext | null, queryingOptions) {
     queryingOptions = { timezones: [queryingOptions.timezone || 'UTC'], ...queryingOptions };
-    const { throwErrors, ...restOptions } = queryingOptions;
+    let { ...restOptions } = queryingOptions;
+    const { throwErrors } = queryingOptions;
 
     const context: RequestContext = {
       authInfo: null,
@@ -107,6 +108,22 @@ export class RefreshScheduler {
     });
 
     try {
+      if (restOptions.timezones.length === 1 && restOptions.timezones[0] === DynamicTimeZone) {
+        const driver = await this.serverCore.getDriver(context as DriverContext);
+        // SWARM specific
+        const zones = await driver.query('SELECT DISTINCT time_zone FROM solutions.scenes where time_zone is not NULL', null).then((tz) => {
+          if (tz.length === 0) {
+            return ['UTC'];
+          }
+          return tz;
+        });
+        this.serverCore.logger(`Resolved dynamic timezones ${zones}`, {
+          securityContext: context.securityContext,
+          requestId: context.requestId
+        });
+        restOptions = { ...restOptions, timezones: zones };
+      }
+
       const compilerApi = this.serverCore.getCompilerApi(context);
       if (queryingOptions.preAggregationsWarmup) {
         await this.refreshPreAggregations(context, compilerApi, restOptions);

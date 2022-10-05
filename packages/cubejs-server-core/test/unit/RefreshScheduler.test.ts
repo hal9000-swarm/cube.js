@@ -1,5 +1,6 @@
 import R from 'ramda';
-import { CubejsServerCore } from '../../src';
+import { BaseDriver } from '@cubejs-backend/query-orchestrator';
+import { CubejsServerCore, DynamicTimeZone } from '../../src';
 import { RefreshScheduler } from '../../src/core/RefreshScheduler';
 import { CompilerApi } from '../../src/core/CompilerApi';
 
@@ -183,6 +184,18 @@ class OrchestratorApiMock {
   }
 }
 
+class MockDriver extends BaseDriver {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars,@typescript-eslint/explicit-member-accessibility
+  async query(query, values) {
+    return ['Atlantic/Reykjavik'];
+  }
+
+  // eslint-disable-next-line @typescript-eslint/explicit-member-accessibility
+  readOnly() {
+    return true;
+  }
+}
+
 describe('Refresh Scheduler', () => {
   jest.setTimeout(60000);
   const setupScheduler = () => {
@@ -198,6 +211,29 @@ describe('Refresh Scheduler', () => {
     });
 
     const orchestratorApi = new OrchestratorApiMock();
+    jest.spyOn(serverCore, 'getCompilerApi').mockImplementation(() => compilerApi);
+    jest.spyOn(serverCore, 'getOrchestratorApi').mockImplementation(() => <any>orchestratorApi);
+
+    const refreshScheduler = new RefreshScheduler(serverCore);
+    return { refreshScheduler, orchestratorApi };
+  };
+
+  const setupDynamicTimeZoneScheduler = () => {
+    const serverCore = new CubejsServerCore({
+      dbType: 'postgres',
+      apiSecret: 'foo',
+      scheduledRefreshTimeZones: [DynamicTimeZone]
+    });
+    const compilerApi = new CompilerApi(repository, 'postgres', {
+      compileContext: {},
+      logger: (msg, params) => {
+        console.log(msg, params);
+      },
+    });
+
+    const orchestratorApi = new OrchestratorApiMock();
+    const driverMock = new MockDriver();
+    jest.spyOn(serverCore, 'getDriver').mockImplementation(() => Promise.resolve(driverMock));
 
     jest.spyOn(serverCore, 'getCompilerApi').mockImplementation(() => compilerApi);
     jest.spyOn(serverCore, 'getOrchestratorApi').mockImplementation(() => <any>orchestratorApi);
@@ -226,6 +262,52 @@ describe('Refresh Scheduler', () => {
     const refreshScheduler = new RefreshScheduler(serverCore);
     return { refreshScheduler, orchestratorApi };
   };
+
+  test('Round robin pre-aggregation refresh by history based on external input',
+    async () => {
+      const { refreshScheduler, orchestratorApi } = setupDynamicTimeZoneScheduler();
+      const result = [
+        { tableName: 'stb_pre_aggregations.foo_first20201231', timezone: 'Atlantic/Reykjavik' },
+        { tableName: 'stb_pre_aggregations.foo_second20201231', timezone: 'Atlantic/Reykjavik' },
+        { tableName: 'stb_pre_aggregations.bar_first20201231', timezone: 'Atlantic/Reykjavik' },
+        { tableName: 'stb_pre_aggregations.foo_first20201230', timezone: 'Atlantic/Reykjavik' },
+        { tableName: 'stb_pre_aggregations.foo_second20201230', timezone: 'Atlantic/Reykjavik' },
+        { tableName: 'stb_pre_aggregations.bar_first20201230', timezone: 'Atlantic/Reykjavik' },
+        { tableName: 'stb_pre_aggregations.foo_first20201229', timezone: 'Atlantic/Reykjavik' },
+        { tableName: 'stb_pre_aggregations.foo_second20201229', timezone: 'Atlantic/Reykjavik' },
+        { tableName: 'stb_pre_aggregations.bar_first20201229', timezone: 'Atlantic/Reykjavik' },
+        { tableName: 'stb_pre_aggregations.foo_first20201228', timezone: 'Atlantic/Reykjavik' },
+        { tableName: 'stb_pre_aggregations.foo_second20201228', timezone: 'Atlantic/Reykjavik' },
+        { tableName: 'stb_pre_aggregations.foo_first20201227', timezone: 'Atlantic/Reykjavik' },
+        { tableName: 'stb_pre_aggregations.foo_second20201227', timezone: 'Atlantic/Reykjavik' },
+      ];
+      for (let i = 0; i < 1000; i++) {
+        const refreshResult = await refreshScheduler.runScheduledRefresh(null, {
+          concurrency: 2,
+          workerIndices: [0],
+          timezones: [DynamicTimeZone]
+        });
+        expect(orchestratorApi.createdTables).toEqual(R.take((i + 1) * 2, result).filter((x, qi) => qi % 2 === 0));
+        if (refreshResult.finished) {
+          break;
+        }
+      }
+
+      for (let i = 0; i < 1000; i++) {
+        const refreshResult = await refreshScheduler.runScheduledRefresh(null, {
+          concurrency: 2,
+          workerIndices: [1],
+          timezones: [DynamicTimeZone]
+        });
+        const prevWorkerResult = result.filter((x, qi) => qi % 2 === 0);
+        expect(orchestratorApi.createdTables).toEqual(
+          prevWorkerResult.concat(R.take((i + 1) * 2, result).filter((x, qi) => qi % 2 === 1))
+        );
+        if (refreshResult.finished) {
+          break;
+        }
+      }
+    });
 
   test('Round robin pre-aggregation refresh by history priority', async () => {
     const { refreshScheduler, orchestratorApi } = setupScheduler();
