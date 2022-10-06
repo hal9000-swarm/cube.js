@@ -1,6 +1,6 @@
 import R from 'ramda';
 import { BaseDriver } from '@cubejs-backend/query-orchestrator';
-import { CubejsServerCore, DynamicTimeZone } from '../../src';
+import {CubejsServerCore, DynamicTimeZone} from '../../src';
 import { RefreshScheduler } from '../../src/core/RefreshScheduler';
 import { CompilerApi } from '../../src/core/CompilerApi';
 
