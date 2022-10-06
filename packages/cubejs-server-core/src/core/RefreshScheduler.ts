@@ -111,12 +111,13 @@ export class RefreshScheduler {
       if (restOptions.timezones.length === 1 && restOptions.timezones[0] === DynamicTimeZone) {
         const driver = await this.serverCore.getDriver(context as DriverContext);
         // SWARM specific
-        const zones = await driver.query('SELECT DISTINCT time_zone FROM solutions.scenes where time_zone is not NULL', null).then((tz) => {
+        const databaseResult = await driver.query('SELECT DISTINCT time_zone FROM solutions.scenes where time_zone is not NULL', null).then((tz) => {
           if (tz.length === 0) {
             return ['UTC'];
           }
           return tz;
         });
+        const zones = databaseResult.map((zone) => zone.time_zone);
         this.serverCore.logger(`Resolved dynamic timezones ${zones}`, {
           securityContext: context.securityContext,
           requestId: context.requestId

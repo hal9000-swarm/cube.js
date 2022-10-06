@@ -187,7 +187,9 @@ class OrchestratorApiMock {
 class MockDriver extends BaseDriver {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars,@typescript-eslint/explicit-member-accessibility
   async query(query, values) {
-    return ['Atlantic/Reykjavik'];
+    return [
+      { time_zone: 'Atlantic/Reykjavik' }
+    ];
   }
 
   // eslint-disable-next-line @typescript-eslint/explicit-member-accessibility
