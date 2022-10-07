@@ -1,6 +1,6 @@
 import R from 'ramda';
 import { BaseDriver } from '@cubejs-backend/query-orchestrator';
-import {CubejsServerCore, DynamicTimeZone} from '../../src';
+import { CubejsServerCore, DynamicTimeZone } from '../../src';
 import { RefreshScheduler } from '../../src/core/RefreshScheduler';
 import { CompilerApi } from '../../src/core/CompilerApi';
 
@@ -184,22 +184,32 @@ class OrchestratorApiMock {
   }
 }
 
+type TimeZoneRecord ={
+  // eslint-disable-next-line camelcase
+  time_zone: string;
+};
+
 class MockDriver extends BaseDriver {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars,@typescript-eslint/explicit-member-accessibility
-  async query(query, values) {
-    return [
-      { time_zone: 'Atlantic/Reykjavik' }
-    ];
+  private readonly timeZones: TimeZoneRecord[];
+
+  public constructor(timeZones: TimeZoneRecord[]) {
+    super();
+    this.timeZones = timeZones;
   }
 
-  // eslint-disable-next-line @typescript-eslint/explicit-member-accessibility
-  readOnly() {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  public async query(query, values) {
+    return this.timeZones;
+  }
+
+  public readOnly() {
     return true;
   }
 }
 
 describe('Refresh Scheduler', () => {
   jest.setTimeout(60000);
+
   const setupScheduler = () => {
     const serverCore = new CubejsServerCore({
       dbType: 'postgres',
@@ -213,6 +223,9 @@ describe('Refresh Scheduler', () => {
     });
 
     const orchestratorApi = new OrchestratorApiMock();
+    const zones = [];
+    const driverMock = new MockDriver(zones);
+    jest.spyOn(serverCore, 'getDriver').mockImplementation(() => Promise.resolve(driverMock));
     jest.spyOn(serverCore, 'getCompilerApi').mockImplementation(() => compilerApi);
     jest.spyOn(serverCore, 'getOrchestratorApi').mockImplementation(() => <any>orchestratorApi);
 
@@ -223,8 +236,7 @@ describe('Refresh Scheduler', () => {
   const setupDynamicTimeZoneScheduler = () => {
     const serverCore = new CubejsServerCore({
       dbType: 'postgres',
-      apiSecret: 'foo',
-      scheduledRefreshTimeZones: [DynamicTimeZone]
+      apiSecret: 'foo'
     });
     const compilerApi = new CompilerApi(repository, 'postgres', {
       compileContext: {},
@@ -234,7 +246,8 @@ describe('Refresh Scheduler', () => {
     });
 
     const orchestratorApi = new OrchestratorApiMock();
-    const driverMock = new MockDriver();
+    const zones = [{ time_zone: 'Atlantic/Reykjavik' }];
+    const driverMock = new MockDriver(zones);
     jest.spyOn(serverCore, 'getDriver').mockImplementation(() => Promise.resolve(driverMock));
 
     jest.spyOn(serverCore, 'getCompilerApi').mockImplementation(() => compilerApi);
@@ -257,7 +270,9 @@ describe('Refresh Scheduler', () => {
     });
 
     const orchestratorApi = new OrchestratorApiMock();
-
+    const zones = [];
+    const driverMock = new MockDriver(zones);
+    jest.spyOn(serverCore, 'getDriver').mockImplementation(() => Promise.resolve(driverMock));
     jest.spyOn(serverCore, 'getCompilerApi').mockImplementation(() => compilerApi);
     jest.spyOn(serverCore, 'getOrchestratorApi').mockImplementation(() => <any>orchestratorApi);
 
@@ -268,47 +283,71 @@ describe('Refresh Scheduler', () => {
   test('Round robin pre-aggregation refresh by history based on external input',
     async () => {
       const { refreshScheduler, orchestratorApi } = setupDynamicTimeZoneScheduler();
+
       const result = [
-        { tableName: 'stb_pre_aggregations.foo_first20201231', timezone: 'Atlantic/Reykjavik' },
-        { tableName: 'stb_pre_aggregations.foo_second20201231', timezone: 'Atlantic/Reykjavik' },
-        { tableName: 'stb_pre_aggregations.bar_first20201231', timezone: 'Atlantic/Reykjavik' },
-        { tableName: 'stb_pre_aggregations.foo_first20201230', timezone: 'Atlantic/Reykjavik' },
-        { tableName: 'stb_pre_aggregations.foo_second20201230', timezone: 'Atlantic/Reykjavik' },
-        { tableName: 'stb_pre_aggregations.bar_first20201230', timezone: 'Atlantic/Reykjavik' },
-        { tableName: 'stb_pre_aggregations.foo_first20201229', timezone: 'Atlantic/Reykjavik' },
-        { tableName: 'stb_pre_aggregations.foo_second20201229', timezone: 'Atlantic/Reykjavik' },
-        { tableName: 'stb_pre_aggregations.bar_first20201229', timezone: 'Atlantic/Reykjavik' },
-        { tableName: 'stb_pre_aggregations.foo_first20201228', timezone: 'Atlantic/Reykjavik' },
-        { tableName: 'stb_pre_aggregations.foo_second20201228', timezone: 'Atlantic/Reykjavik' },
-        { tableName: 'stb_pre_aggregations.foo_first20201227', timezone: 'Atlantic/Reykjavik' },
-        { tableName: 'stb_pre_aggregations.foo_second20201227', timezone: 'Atlantic/Reykjavik' },
+        {
+          tableName: 'stb_pre_aggregations.foo_first20201231',
+          timezone: 'Atlantic/Reykjavik'
+        },
+        {
+          tableName: 'stb_pre_aggregations.bar_first20201231',
+          timezone: 'Atlantic/Reykjavik'
+        },
+        {
+          tableName: 'stb_pre_aggregations.foo_second20201231',
+          timezone: 'UTC'
+        },
+        {
+          tableName: 'stb_pre_aggregations.foo_first20201230',
+          timezone: 'Atlantic/Reykjavik'
+        },
+        {
+          tableName: 'stb_pre_aggregations.bar_first20201230',
+          timezone: 'Atlantic/Reykjavik'
+        },
+        {
+          tableName: 'stb_pre_aggregations.foo_second20201230',
+          timezone: 'UTC'
+        },
+        {
+          tableName: 'stb_pre_aggregations.foo_first20201229',
+          timezone: 'Atlantic/Reykjavik'
+        },
+        {
+          tableName: 'stb_pre_aggregations.bar_first20201229',
+          timezone: 'Atlantic/Reykjavik'
+        },
+        {
+          tableName: 'stb_pre_aggregations.foo_second20201229',
+          timezone: 'UTC'
+        },
+        {
+          tableName: 'stb_pre_aggregations.foo_first20201228',
+          timezone: 'Atlantic/Reykjavik'
+        },
+        {
+          tableName: 'stb_pre_aggregations.foo_first20201228',
+          timezone: 'UTC'
+        },
+        {
+          tableName: 'stb_pre_aggregations.foo_first20201227',
+          timezone: 'Atlantic/Reykjavik'
+        },
+        {
+          tableName: 'stb_pre_aggregations.foo_first20201227',
+          timezone: 'UTC'
+        }
       ];
       for (let i = 0; i < 1000; i++) {
         const refreshResult = await refreshScheduler.runScheduledRefresh(null, {
           concurrency: 2,
-          workerIndices: [0],
-          timezones: [DynamicTimeZone]
+          workerIndices: [0]
         });
-        expect(orchestratorApi.createdTables).toEqual(R.take((i + 1) * 2, result).filter((x, qi) => qi % 2 === 0));
         if (refreshResult.finished) {
           break;
         }
       }
-
-      for (let i = 0; i < 1000; i++) {
-        const refreshResult = await refreshScheduler.runScheduledRefresh(null, {
-          concurrency: 2,
-          workerIndices: [1],
-          timezones: [DynamicTimeZone]
-        });
-        const prevWorkerResult = result.filter((x, qi) => qi % 2 === 0);
-        expect(orchestratorApi.createdTables).toEqual(
-          prevWorkerResult.concat(R.take((i + 1) * 2, result).filter((x, qi) => qi % 2 === 1))
-        );
-        if (refreshResult.finished) {
-          break;
-        }
-      }
+      expect(orchestratorApi.createdTables).toEqual(result);
     });
 
   test('Round robin pre-aggregation refresh by history priority', async () => {

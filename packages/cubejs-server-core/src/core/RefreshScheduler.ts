@@ -91,7 +91,7 @@ export class RefreshScheduler {
   }
 
   public async runScheduledRefresh(ctx: RequestContext | null, queryingOptions) {
-    queryingOptions = { timezones: [queryingOptions.timezone || 'UTC'], ...queryingOptions };
+    queryingOptions = { timezones: [queryingOptions.timezone || DynamicTimeZone], ...queryingOptions };
     let { ...restOptions } = queryingOptions;
     const { throwErrors } = queryingOptions;
 
@@ -111,13 +111,15 @@ export class RefreshScheduler {
       if (restOptions.timezones.length === 1 && restOptions.timezones[0] === DynamicTimeZone) {
         const driver = await this.serverCore.getDriver(context as DriverContext);
         // SWARM specific
-        const databaseResult = await driver.query('SELECT DISTINCT time_zone FROM solutions.scenes where time_zone is not NULL', null).then((tz) => {
-          if (tz.length === 0) {
-            return ['UTC'];
-          }
-          return tz;
-        });
-        const zones = databaseResult.map((zone) => zone.time_zone);
+        const databaseResult = await driver.query('SELECT DISTINCT time_zone FROM solutions.scenes where time_zone is not NULL', null).then((tz) => tz);
+        let zones: string[] = [];
+        if (databaseResult) {
+          zones = databaseResult.map((zone) => zone.time_zone);
+        }
+        if (zones.indexOf('UTC') === -1) {
+          zones.push('UTC'); // ensure UTC is always in there
+        }
+
         this.serverCore.logger(`Resolved dynamic timezones ${zones}`, {
           securityContext: context.securityContext,
           requestId: context.requestId
