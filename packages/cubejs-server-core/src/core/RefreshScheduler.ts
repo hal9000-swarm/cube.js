@@ -7,7 +7,7 @@ import { PreAggregationDescription } from '@cubejs-backend/query-orchestrator';
 
 import { CubejsServerCore } from './server';
 import { CompilerApi } from './CompilerApi';
-import { RequestContext } from './types';
+import { DriverContext, RequestContext } from './types';
 
 export interface ScheduledRefreshOptions {
   timezone?: string,
@@ -262,8 +262,34 @@ export class RefreshScheduler {
       this.getSchedulerConcurrency(this.serverCore, context) ||
       1;
 
+    //----------------------------------------------------------------------------------------------
+    // SWARM specific
+    let refreshTimeZones: string[];
+    if (!options.timezones) {
+      const driver = await this.serverCore.getDriver(context as DriverContext);
+      const databaseResult = await driver.query('SELECT DISTINCT time_zone FROM solutions.scenes where time_zone is not NULL', null).then((tz) => tz);
+      let zones: string[] = [];
+      if (databaseResult) {
+        // @ts-ignore
+        zones = databaseResult.map((zone) => zone.time_zone);
+      }
+      if (zones.indexOf('UTC') === -1) {
+        zones.push('UTC'); // ensure UTC is always in there
+      }
+
+      this.serverCore.logger(`Resolved dynamic timezones ${zones}`, {
+        securityContext: context.securityContext,
+        requestId: context.requestId
+      });
+      refreshTimeZones = zones;
+    } else {
+      refreshTimeZones = options.timezones;
+    }
+
+    //----------------------------------------------------------------------------------------------
+
     const queryingOptions: ScheduledRefreshQueryingOptions = {
-      timezones: [options.timezone || 'UTC'],
+      timezones: refreshTimeZones,
       ...options,
       concurrency,
       workerIndices: options.workerIndices || R.range(0, concurrency),
